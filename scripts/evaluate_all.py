@@ -22,7 +22,7 @@ from src.features.tfidf_features import TFIDFFeatureExtractor
 from src.features.fusion import FeatureFusion
 from src.models.infer import predict_lexicon_only, predict_ml_only, predict_hybrid
 from src.utils.metrics import compute_metrics, print_metrics_summary
-from src.utils.io import save_metrics, save_error_analysis
+from src.utils.io import save_metrics, save_error_analysis, load_model_bundle
 
 
 def categorize_error(text: str, gold: str, pred: str) -> dict:
@@ -70,19 +70,25 @@ def categorize_error(text: str, gold: str, pred: str) -> dict:
     return categories
 
 
-def get_top_tfidf_features(text: str, vectorizer, top_k: int = 10) -> list:
+def get_top_tfidf_features(text: str, extractor, top_k: int = 10) -> list:
     """
     Get top TF-IDF features for a text.
     
     Args:
         text: Input text
-        vectorizer: Fitted TF-IDF vectorizer
+        extractor: TF-IDF extractor (has .vectorizer attribute)
         top_k: Number of top features to return
         
     Returns:
         List of top feature names
     """
     try:
+        # Handle both extractor types
+        if hasattr(extractor, 'vectorizer'):
+            vectorizer = extractor.vectorizer
+        else:
+            vectorizer = extractor
+        
         X = vectorizer.transform([text])
         feature_names = vectorizer.get_feature_names_out()
         
@@ -95,7 +101,8 @@ def get_top_tfidf_features(text: str, vectorizer, top_k: int = 10) -> list:
             top_indices = nonzero_indices[np.argsort(scores)[-top_k:]]
             top_features = [feature_names[i] for i in top_indices]
             return top_features[:top_k]
-    except:
+    except Exception as e:
+        # Silently fail for error analysis
         pass
     
     return []
@@ -118,16 +125,45 @@ def evaluate_model(
     Returns:
         Tuple of (metrics_dict, error_samples)
     """
+    # Load model bundle to get saved extractors
+    bundle = load_model_bundle(model_path)
+    saved_tfidf = bundle.get("vectorizer")
+    saved_scaler = bundle.get("scaler")
+    
+    # Use saved extractors if available, otherwise use passed ones
+    actual_tfidf_extractor = saved_tfidf if saved_tfidf is not None else tfidf_extractor
+    actual_fusion = None
+    
+    if model_type == "hybrid" and saved_tfidf is not None and saved_scaler is not None:
+        from src.features.fusion import FeatureFusion
+        actual_fusion = FeatureFusion(lexicon_extractor, saved_tfidf)
+        actual_fusion.scaler = saved_scaler
+        actual_fusion._fitted = True
+    elif fusion is not None:
+        actual_fusion = fusion
+    
     # Convert labels to integers
     y_true = np.array([label_to_int[label] for label in labels])
     
-    # Predict
+    # Predict (inference functions now return 3 values: predictions, labels, probabilities)
     if model_type == "lexicon":
-        y_pred, pred_labels = predict_lexicon_only(texts, model_path, lexicon_extractor)
+        y_pred, pred_labels, _ = predict_lexicon_only(texts, model_path, lexicon_extractor)
     elif model_type == "ml":
-        y_pred, pred_labels = predict_ml_only(texts, model_path, tfidf_extractor)
+        # Use the extractor saved with the model, not the one passed in
+        if saved_tfidf is not None:
+            # Use the saved extractor (fitted during training)
+            y_pred, pred_labels, _ = predict_ml_only(texts, model_path, saved_tfidf)
+        else:
+            # Fallback to passed extractor
+            y_pred, pred_labels, _ = predict_ml_only(texts, model_path, tfidf_extractor)
     elif model_type == "hybrid":
-        y_pred, pred_labels = predict_hybrid(texts, model_path, fusion)
+        # Use the extractors saved with the model
+        if saved_tfidf is not None and saved_scaler is not None:
+            # Use reconstructed fusion with saved components
+            y_pred, pred_labels, _ = predict_hybrid(texts, model_path, actual_fusion)
+        else:
+            # Fallback to passed fusion
+            y_pred, pred_labels, _ = predict_hybrid(texts, model_path, fusion)
     else:
         raise ValueError(f"Unknown model type: {model_type}")
     
@@ -159,13 +195,13 @@ def evaluate_model(
         
         # Add TF-IDF features if available
         if model_type in ["ml", "hybrid"]:
-            if model_type == "ml" and tfidf_extractor:
+            if model_type == "ml" and actual_tfidf_extractor:
                 error_info["top_tfidf_features"] = get_top_tfidf_features(
-                    text, tfidf_extractor.vectorizer
+                    text, actual_tfidf_extractor
                 )
-            elif model_type == "hybrid" and fusion:
+            elif model_type == "hybrid" and actual_fusion:
                 error_info["top_tfidf_features"] = get_top_tfidf_features(
-                    text, fusion.tfidf_extractor.vectorizer
+                    text, actual_fusion.tfidf_extractor
                 )
         
         # Add lexicon features if available

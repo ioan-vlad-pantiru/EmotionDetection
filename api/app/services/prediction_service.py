@@ -96,9 +96,14 @@ class PredictionService:
     ) -> tuple:
         """Synchronous prediction with probabilities."""
         from src.utils.io import load_model_bundle
+        from src.features.fusion import FeatureFusion
         
         bundle = load_model_bundle(model_path)
         label_mapping = bundle["label_mapping"]
+        
+        # Get saved extractors from model bundle (these match what was used during training)
+        saved_tfidf = bundle.get("vectorizer")
+        saved_scaler = bundle.get("scaler")
         
         if model_type == "lexicon":
             if extractors["lexicon_extractor"] is None:
@@ -110,21 +115,48 @@ class PredictionService:
                 return_proba=True
             )
         elif model_type == "ml":
-            _, pred_labels, probabilities = predict_ml_only(
-                [text],
-                model_path,
-                extractors["tfidf_extractor"],
-                return_proba=True
-            )
+            # Use the extractor saved with the model, not the one from model_manager
+            if saved_tfidf is not None:
+                # Use saved extractor (matches training)
+                _, pred_labels, probabilities = predict_ml_only(
+                    [text],
+                    model_path,
+                    saved_tfidf,
+                    return_proba=True
+                )
+            else:
+                # Fallback to passed extractor
+                _, pred_labels, probabilities = predict_ml_only(
+                    [text],
+                    model_path,
+                    extractors["tfidf_extractor"],
+                    return_proba=True
+                )
         elif model_type == "hybrid":
-            if extractors["fusion"] is None:
+            # Reconstruct fusion with saved components
+            if saved_tfidf is not None and saved_scaler is not None:
+                # Use saved extractors (matches training)
+                if extractors["lexicon_extractor"] is None:
+                    raise ExtractorNotFoundError("Lexicon extractor not available")
+                saved_fusion = FeatureFusion(extractors["lexicon_extractor"], saved_tfidf)
+                saved_fusion.scaler = saved_scaler
+                saved_fusion._fitted = True
+                _, pred_labels, probabilities = predict_hybrid(
+                    [text],
+                    model_path,
+                    saved_fusion,
+                    return_proba=True
+                )
+            elif extractors["fusion"] is not None:
+                # Fallback to passed fusion
+                _, pred_labels, probabilities = predict_hybrid(
+                    [text],
+                    model_path,
+                    extractors["fusion"],
+                    return_proba=True
+                )
+            else:
                 raise ExtractorNotFoundError("Fusion extractor not available")
-            _, pred_labels, probabilities = predict_hybrid(
-                [text],
-                model_path,
-                extractors["fusion"],
-                return_proba=True
-            )
         else:
             raise InvalidModelError(f"Invalid model type: {model_type}")
         

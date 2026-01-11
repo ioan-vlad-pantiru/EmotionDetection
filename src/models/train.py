@@ -69,16 +69,57 @@ def train_lexicon_only(
     test_size = X_test.shape[0] if hasattr(X_test, 'shape') else len(X_test)
     print(f"Train: {train_size}, Val: {val_size}, Test: {test_size}")
     
-    # Scale features
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_val_scaled = scaler.transform(X_val)
-    X_test_scaled = scaler.transform(X_test)
+    # Scale features (handle zero variance and numerical issues)
+    # Convert to dense if needed for scaling
+    if hasattr(X_train, 'toarray'):
+        X_train_dense = X_train.toarray()
+        X_val_dense = X_val.toarray()
+        X_test_dense = X_test.toarray()
+    else:
+        X_train_dense = X_train
+        X_val_dense = X_val
+        X_test_dense = X_test
     
-    # Train classifier
+    # Manual scaling to avoid divide-by-zero warnings
+    # Compute mean and std manually, handling zero variance
+    X_train_mean = np.mean(X_train_dense, axis=0)
+    X_train_std = np.std(X_train_dense, axis=0)
+    
+    # Handle zero variance: set std to 1.0 to avoid division by zero
+    zero_var_mask = X_train_std < 1e-10
+    X_train_std[zero_var_mask] = 1.0
+    
+    # Center and scale
+    X_train_scaled = (X_train_dense - X_train_mean) / X_train_std
+    X_val_scaled = (X_val_dense - X_train_mean) / X_train_std
+    X_test_scaled = (X_test_dense - X_train_mean) / X_train_std
+    
+    # Zero variance features should be 0 after centering
+    X_train_scaled[:, zero_var_mask] = 0.0
+    X_val_scaled[:, zero_var_mask] = 0.0
+    X_test_scaled[:, zero_var_mask] = 0.0
+    
+    # Clip extreme values to prevent overflow (clip to reasonable range)
+    X_train_scaled = np.clip(X_train_scaled, -10.0, 10.0)
+    X_val_scaled = np.clip(X_val_scaled, -10.0, 10.0)
+    X_test_scaled = np.clip(X_test_scaled, -10.0, 10.0)
+    
+    # Replace any remaining inf/nan values with 0
+    X_train_scaled = np.nan_to_num(X_train_scaled, nan=0.0, posinf=0.0, neginf=0.0)
+    X_val_scaled = np.nan_to_num(X_val_scaled, nan=0.0, posinf=0.0, neginf=0.0)
+    X_test_scaled = np.nan_to_num(X_test_scaled, nan=0.0, posinf=0.0, neginf=0.0)
+    
+    # Create StandardScaler object for saving (for compatibility with model loading)
+    scaler = StandardScaler()
+    scaler.mean_ = X_train_mean
+    scaler.scale_ = X_train_std
+    scaler.var_ = X_train_std ** 2
+    scaler.n_features_in_ = X_train_dense.shape[1]
+    
+    # Train classifier (use lbfgs solver for better stability)
     print("Training classifier...")
     classifier = LogisticRegression(
-        solver=CLASSIFIER_SOLVER,
+        solver='lbfgs',  # More stable than saga for this use case
         max_iter=CLASSIFIER_MAX_ITER,
         class_weight="balanced",
         random_state=RANDOM_STATE,

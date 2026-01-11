@@ -7,6 +7,7 @@ import re
 
 from src.config import PLUTCHIK_8
 from src.utils.text import preprocess_text, extract_stylistic_features
+from src.utils.negation import get_negation_features
 
 
 class LexiconFeatureExtractor:
@@ -49,6 +50,9 @@ class LexiconFeatureExtractor:
         # Extract stylistic features
         stylistic = extract_stylistic_features(text)
         
+        # Extract negation features
+        negation_features = get_negation_features(tokens, negation_positions, self.lang)
+        
         # Build feature vector
         features = []
         feature_names = []
@@ -65,7 +69,7 @@ class LexiconFeatureExtractor:
             features.append(score)
             feature_names.append(f"intensity_{emotion}")
         
-        # Stylistic features
+        # Stylistic features (5 features)
         features.append(stylistic.get("exclamation_count", 0))
         feature_names.append("exclamation_count")
         
@@ -80,6 +84,16 @@ class LexiconFeatureExtractor:
         
         features.append(stylistic.get("uppercase_ratio", 0.0))
         feature_names.append("uppercase_ratio")
+        
+        # Negation features (3 features)
+        features.append(negation_features.get("has_negation", 0.0))
+        feature_names.append("has_negation")
+        
+        features.append(negation_features.get("negation_window_size", 0.0))
+        feature_names.append("negation_window_size")
+        
+        features.append(negation_features.get("negation_ratio", 0.0))
+        feature_names.append("negation_ratio")
         
         # Store feature names for later use
         self.feature_names = feature_names

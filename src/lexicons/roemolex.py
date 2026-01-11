@@ -161,7 +161,7 @@ class RoEmoLex:
     
     def get_emotion_scores(self, tokens: List[str], negation_positions: List[int] = None) -> Dict[str, float]:
         """
-        Get emotion scores for a list of tokens.
+        Get emotion scores for a list of tokens with improved negation handling.
         
         Args:
             tokens: List of token strings
@@ -170,6 +170,8 @@ class RoEmoLex:
         Returns:
             Dictionary mapping emotion -> total score
         """
+        from src.utils.negation import invert_emotion
+        
         emotion_scores = defaultdict(float)
         negation_positions = set(negation_positions or [])
         
@@ -180,13 +182,18 @@ class RoEmoLex:
             if token in self.word_emotions:
                 # Check if in negation window
                 if i in negation_positions:
-                    # Downweight or invert (simple: downweight by 0.3)
-                    weight = 0.3
+                    # Improved negation: invert emotions instead of just downweighting
+                    for emotion, score in self.word_emotions[token].items():
+                        # Invert the emotion (joy -> sadness, etc.)
+                        inverted_emotion = invert_emotion(emotion)
+                        # Apply inverted emotion with reduced weight (0.5x)
+                        emotion_scores[inverted_emotion] += score * 0.5
+                        # Also reduce original emotion (0.1x to cancel it out)
+                        emotion_scores[emotion] += score * 0.1
                 else:
-                    weight = 1.0
-                
-                for emotion, score in self.word_emotions[token].items():
-                    emotion_scores[emotion] += score * weight
+                    # Normal: add emotion scores
+                    for emotion, score in self.word_emotions[token].items():
+                        emotion_scores[emotion] += score
         
         return dict(emotion_scores)
     

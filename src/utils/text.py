@@ -58,6 +58,7 @@ def preprocess_text(text: str, lang: str = "en") -> Tuple[str, List[int]]:
 def find_negation_positions(tokens: List[str], lang: str) -> List[int]:
     """
     Find token positions that are within negation window.
+    Improved to handle more negation patterns.
     
     Args:
         tokens: List of tokens
@@ -71,8 +72,9 @@ def find_negation_positions(tokens: List[str], lang: str) -> List[int]:
     
     for i, token in enumerate(tokens):
         if token in negation_cues:
-            # Mark tokens in window after negation
-            for j in range(i + 1, min(i + 1 + 4, len(tokens))):
+            # Extended window: mark tokens in window after negation (up to 5 tokens)
+            # This catches cases like "nu sunt fericit" where "fericit" is 2 tokens after "nu"
+            for j in range(i + 1, min(i + 1 + 5, len(tokens))):
                 negation_positions.add(j)
     
     return sorted(negation_positions)

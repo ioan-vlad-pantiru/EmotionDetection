@@ -80,6 +80,19 @@ class FeatureFusion:
         
         # Scale lexicon features
         if self.scaler is not None:
+            # Handle feature count mismatch (old models may have been trained with fewer features)
+            expected_features = self.scaler.n_features_in_ if hasattr(self.scaler, 'n_features_in_') else self.scaler.mean_.shape[0] if hasattr(self.scaler, 'mean_') else lexicon_features.shape[1]
+            
+            if lexicon_features.shape[1] != expected_features:
+                if lexicon_features.shape[1] > expected_features:
+                    # New extractor has more features (e.g., negation features added)
+                    # Take only the first N features to match old model
+                    lexicon_features = lexicon_features[:, :expected_features]
+                else:
+                    # New extractor has fewer features - pad with zeros
+                    padding = np.zeros((lexicon_features.shape[0], expected_features - lexicon_features.shape[1]))
+                    lexicon_features = np.hstack([lexicon_features, padding])
+            
             lexicon_features = self.scaler.transform(lexicon_features)
         
         # Convert lexicon to sparse for hstack
