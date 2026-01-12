@@ -38,8 +38,19 @@ data/raw/*
 data/processed/*
 !data/processed/.gitkeep
 
-# Models
+# Models - exclude all model files
 models/**/*.joblib
+models/**/*.safetensors
+models/**/*.pt
+models/**/*.pth
+models/**/*.bin
+models/**/checkpoint-*/
+models/**/transformer_model/
+models/**/transformer_checkpoints/
+*.joblib
+*.safetensors
+*.pt
+*.pth
 
 # Reports (keep structure)
 reports/metrics/*
