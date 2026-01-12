@@ -107,17 +107,70 @@ class LexiconFeatureExtractor:
             self.extract("dummy")
         return self.feature_names
     
-    def extract_batch(self, texts: List[str]) -> np.ndarray:
+    def extract_batch(self, texts: List[str], include_negation: bool = True) -> np.ndarray:
         """
         Extract features for a batch of texts.
         
         Args:
             texts: List of input texts
+            include_negation: If False, exclude negation features (for backward compatibility)
             
         Returns:
             Feature matrix (n_samples, n_features)
         """
-        features_list = [self.extract(text) for text in texts]
+        if include_negation:
+            features_list = [self.extract(text) for text in texts]
+        else:
+            # Extract without negation features (for backward compatibility with old models)
+            features_list = [self._extract_without_negation(text) for text in texts]
         return np.vstack(features_list)
+    
+    def _extract_without_negation(self, text: str) -> np.ndarray:
+        """
+        Extract lexicon features without negation features (21 features total).
+        For backward compatibility with models trained before negation features were added.
+        
+        Args:
+            text: Input text
+            
+        Returns:
+            Feature vector as numpy array (21 features)
+        """
+        # Preprocess and get negation positions
+        preprocessed_text, negation_positions = preprocess_text(text, self.lang)
+        
+        # Tokenize
+        tokens = re.findall(r'\b\w+\b', preprocessed_text.lower())
+        
+        # Get emotion scores and counts
+        emotion_scores = self.lexicon.get_emotion_scores(tokens, negation_positions)
+        emotion_counts = self.lexicon.get_emotion_counts(tokens, negation_positions)
+        
+        # Extract stylistic features
+        stylistic = extract_stylistic_features(text)
+        
+        # Build feature vector (without negation features)
+        features = []
+        
+        # Emotion counts (8 features)
+        for emotion in self.emotion_names:
+            count = emotion_counts.get(emotion, 0)
+            features.append(count)
+        
+        # Emotion intensity sums (8 features)
+        for emotion in self.emotion_names:
+            score = emotion_scores.get(emotion, 0.0)
+            features.append(score)
+        
+        # Stylistic features (5 features)
+        features.append(stylistic.get("exclamation_count", 0))
+        features.append(stylistic.get("question_count", 0))
+        features.append(stylistic.get("repeated_exclamation", 0))
+        features.append(stylistic.get("repeated_question", 0))
+        features.append(stylistic.get("uppercase_ratio", 0.0))
+        
+        # Total: 8 + 8 + 5 = 21 features (no negation features)
+        
+        return np.array(features, dtype=np.float32)
 
 

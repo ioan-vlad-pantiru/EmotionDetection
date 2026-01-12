@@ -63,7 +63,8 @@ class PredictionService:
             text,
             model_type,
             model_info["path"],
-            extractors
+            extractors,
+            lang  # Pass language for negation post-processing
         )
         
         pred_labels, probabilities, label_mapping = result
@@ -92,7 +93,8 @@ class PredictionService:
         text: str,
         model_type: str,
         model_path: Path,
-        extractors: Dict
+        extractors: Dict,
+        lang: str = "en"
     ) -> tuple:
         """Synchronous prediction with probabilities."""
         from src.utils.io import load_model_bundle
@@ -122,7 +124,8 @@ class PredictionService:
                     [text],
                     model_path,
                     saved_tfidf,
-                    return_proba=True
+                    return_proba=True,
+                    lang=lang
                 )
             else:
                 # Fallback to passed extractor
@@ -130,7 +133,8 @@ class PredictionService:
                     [text],
                     model_path,
                     extractors["tfidf_extractor"],
-                    return_proba=True
+                    return_proba=True,
+                    lang=lang
                 )
         elif model_type == "hybrid":
             # Reconstruct fusion with saved components

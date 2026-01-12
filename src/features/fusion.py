@@ -76,23 +76,21 @@ class FeatureFusion:
         tfidf_features = self.tfidf_extractor.transform(texts)
         
         # Get lexicon features (dense)
-        lexicon_features = self.lexicon_extractor.extract_batch(texts)
+        # Determine expected feature count from scaler
+        expected_features = None
+        if self.scaler is not None:
+            expected_features = self.scaler.n_features_in_ if hasattr(self.scaler, 'n_features_in_') else self.scaler.mean_.shape[0] if hasattr(self.scaler, 'mean_') else None
+        
+        # Extract with or without negation based on scaler expectations
+        if expected_features == 21:
+            # Old model expects 21 features (without negation)
+            lexicon_features = self.lexicon_extractor.extract_batch(texts, include_negation=False)
+        else:
+            # New model or unknown - extract with negation features
+            lexicon_features = self.lexicon_extractor.extract_batch(texts, include_negation=True)
         
         # Scale lexicon features
         if self.scaler is not None:
-            # Handle feature count mismatch (old models may have been trained with fewer features)
-            expected_features = self.scaler.n_features_in_ if hasattr(self.scaler, 'n_features_in_') else self.scaler.mean_.shape[0] if hasattr(self.scaler, 'mean_') else lexicon_features.shape[1]
-            
-            if lexicon_features.shape[1] != expected_features:
-                if lexicon_features.shape[1] > expected_features:
-                    # New extractor has more features (e.g., negation features added)
-                    # Take only the first N features to match old model
-                    lexicon_features = lexicon_features[:, :expected_features]
-                else:
-                    # New extractor has fewer features - pad with zeros
-                    padding = np.zeros((lexicon_features.shape[0], expected_features - lexicon_features.shape[1]))
-                    lexicon_features = np.hstack([lexicon_features, padding])
-            
             lexicon_features = self.scaler.transform(lexicon_features)
         
         # Convert lexicon to sparse for hstack

@@ -15,6 +15,8 @@ from src.utils.io import load_model_bundle
 from src.features.lexicon_features import LexiconFeatureExtractor
 from src.features.tfidf_features import TFIDFFeatureExtractor
 from src.features.fusion import FeatureFusion
+from src.utils.text import preprocess_text
+from src.utils.negation import invert_emotion
 
 # Try to import transformers (optional)
 try:
@@ -94,23 +96,24 @@ def predict_lexicon_only(
     scaler = bundle["scaler"]
     label_mapping = bundle["label_mapping"]
     
-    # Extract features
-    X = lexicon_extractor.extract_batch(texts)
+    # Determine expected feature count
+    expected_features = scaler.n_features_in_ if hasattr(scaler, 'n_features_in_') else scaler.mean_.shape[0] if hasattr(scaler, 'mean_') else None
     
-    # Handle feature count mismatch (old models may have been trained with fewer features)
-    expected_features = scaler.n_features_in_ if hasattr(scaler, 'n_features_in_') else scaler.mean_.shape[0] if hasattr(scaler, 'mean_') else X.shape[1]
-    
-    if X.shape[1] != expected_features:
-        if X.shape[1] > expected_features:
-            # New extractor has more features (e.g., negation features added)
-            # Take only the first N features to match old model
-            print(f"Warning: Feature mismatch - extracting {X.shape[1]} features but model expects {expected_features}. Using first {expected_features} features.")
-            X = X[:, :expected_features]
-        else:
-            # New extractor has fewer features - pad with zeros
-            print(f"Warning: Feature mismatch - extracting {X.shape[1]} features but model expects {expected_features}. Padding with zeros.")
-            padding = np.zeros((X.shape[0], expected_features - X.shape[1]))
-            X = np.hstack([X, padding])
+    # Extract features with or without negation based on model expectations
+    if expected_features == 21:
+        # Old model expects 21 features (without negation)
+        X = lexicon_extractor.extract_batch(texts, include_negation=False)
+    else:
+        # New model or unknown - extract with negation features
+        X = lexicon_extractor.extract_batch(texts, include_negation=True)
+        
+        # Handle mismatch if still occurs
+        if expected_features is not None and X.shape[1] != expected_features:
+            if X.shape[1] > expected_features:
+                X = X[:, :expected_features]
+            else:
+                padding = np.zeros((X.shape[0], expected_features - X.shape[1]))
+                X = np.hstack([X, padding])
     
     # Scale
     X_scaled = scaler.transform(X)
@@ -127,6 +130,12 @@ def predict_lexicon_only(
     int_to_label = {v: k for k, v in label_mapping.items()}
     predicted_labels = [int_to_label[pred] for pred in predictions]
     
+    # Post-process: Handle negation for old models (21 features = old model without negation)
+    if expected_features == 21:
+        predicted_labels, probabilities = _apply_negation_postprocessing(
+            texts, predicted_labels, probabilities, label_mapping, lexicon_extractor.lang
+        )
+    
     return predictions, predicted_labels, probabilities
 
 
@@ -135,6 +144,7 @@ def predict_ml_only(
     model_path: Path,
     tfidf_extractor: TFIDFFeatureExtractor,
     return_proba: bool = False,
+    lang: str = "en",
 ) -> Tuple[np.ndarray, List[str], np.ndarray]:
     """
     Predict using ML-only model.
@@ -169,7 +179,96 @@ def predict_ml_only(
     int_to_label = {v: k for k, v in label_mapping.items()}
     predicted_labels = [int_to_label[pred] for pred in predictions]
     
+    # Post-process: Handle negation for ML models (TF-IDF doesn't capture negation well)
+    # Get language from parameter, metadata, or detect from text
+    if lang not in ["en", "ro"]:
+        metadata = bundle.get("metadata", {})
+        lang = metadata.get("lang", "en")
+    
+    # If language still not determined, try to detect from text
+    if lang not in ["en", "ro"] and texts:
+        import re
+        ro_negation = {"nu", "niciodată", "fără", "nici", "niciun", "niciuna"}
+        tokens = re.findall(r'\b\w+\b', texts[0].lower())
+        if any(token in ro_negation for token in tokens):
+            lang = "ro"
+        else:
+            lang = "en"
+    
+    # Always apply negation post-processing for ML models (they don't have negation features)
+    predicted_labels, probabilities = _apply_negation_postprocessing(
+        texts, predicted_labels, probabilities, label_mapping, lang
+    )
+    
     return predictions, predicted_labels, probabilities
+
+
+def _apply_negation_postprocessing(
+    texts: List[str],
+    predicted_labels: List[str],
+    probabilities: Optional[np.ndarray],
+    label_mapping: Dict[str, int],
+    lang: str
+) -> Tuple[List[str], Optional[np.ndarray]]:
+    """
+    Post-process predictions to handle negation for old models.
+    
+    Args:
+        texts: Original input texts
+        predicted_labels: Predicted emotion labels
+        probabilities: Prediction probabilities (can be None)
+        label_mapping: Label to integer mapping
+        lang: Language code
+        
+    Returns:
+        Tuple of (adjusted_labels, adjusted_probabilities)
+    """
+    from src.utils.text import find_negation_positions
+    import re
+    
+    adjusted_labels = []
+    adjusted_probs = probabilities.copy() if probabilities is not None else None
+    
+    for i, (text, pred_label) in enumerate(zip(texts, predicted_labels)):
+        # Check if text contains negation
+        tokens = re.findall(r'\b\w+\b', text.lower())
+        negation_positions = find_negation_positions(tokens, lang)
+        
+        if len(negation_positions) > 0:
+            # Negation detected - for ML models, always flip if negation is present
+            # (TF-IDF doesn't capture negation, so we need aggressive post-processing)
+            should_flip = False
+            
+            if pred_label != "neutral":
+                # For ML models: if negation is detected and emotion is not neutral, flip it
+                # This is because TF-IDF features don't understand negation at all
+                # Examples: "not happy" -> should be sadness, not joy
+                #           "nu sunt fericit" -> should be sadness, not joy
+                should_flip = True
+            
+            if should_flip:
+                # Flip to opposite emotion
+                inverted_emotion = invert_emotion(pred_label)
+                adjusted_labels.append(inverted_emotion)
+                
+                # Adjust probabilities
+                if adjusted_probs is not None and inverted_emotion in label_mapping:
+                    # Swap probabilities between original and inverted emotion
+                    orig_idx = label_mapping[pred_label]
+                    inv_idx = label_mapping[inverted_emotion]
+                    
+                    # Swap probabilities
+                    orig_prob = adjusted_probs[i, orig_idx]
+                    inv_prob = adjusted_probs[i, inv_idx]
+                    adjusted_probs[i, orig_idx] = inv_prob
+                    adjusted_probs[i, inv_idx] = orig_prob
+            else:
+                adjusted_labels.append(pred_label)
+        else:
+            # No negation - keep original prediction
+            adjusted_labels.append(pred_label)
+    
+    return adjusted_labels, adjusted_probs
 
 
 def predict_hybrid(
@@ -209,6 +308,17 @@ def predict_hybrid(
     # Convert to labels
     int_to_label = {v: k for k, v in label_mapping.items()}
     predicted_labels = [int_to_label[pred] for pred in predictions]
+    
+    # Post-process: Handle negation for old models (check if scaler expects 21 features)
+    bundle = load_model_bundle(model_path)
+    saved_scaler = bundle.get("scaler")
+    if saved_scaler is not None:
+        expected_lexicon_features = saved_scaler.n_features_in_ if hasattr(saved_scaler, 'n_features_in_') else saved_scaler.mean_.shape[0] if hasattr(saved_scaler, 'mean_') else None
+        if expected_lexicon_features == 21:
+            # Old model - apply negation post-processing
+            predicted_labels, probabilities = _apply_negation_postprocessing(
+                texts, predicted_labels, probabilities, label_mapping, fusion.lexicon_extractor.lang
+            )
     
     return predictions, predicted_labels, probabilities
 
